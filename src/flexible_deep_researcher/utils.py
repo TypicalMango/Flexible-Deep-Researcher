@@ -257,7 +257,7 @@ def searxng_search(query: str, max_results: int = 3, fetch_full_page: bool = Fal
     return {"results": results}
     
 @traceable
-def tavily_search(query: str, fetch_full_page: bool = True, max_results: int = 3) -> Dict[str, List[Dict[str, Any]]]:
+def tavily_search(api_key: str, query: str, fetch_full_page: bool = True, max_results: int = 3) -> Dict[str, List[Dict[str, Any]]]:
     """
     Search the web using the Tavily API and return formatted results.
     
@@ -280,7 +280,7 @@ def tavily_search(query: str, fetch_full_page: bool = True, max_results: int = 3
                                             fetch_full_page is True
     """
      
-    tavily_client = TavilyClient()
+    tavily_client = TavilyClient(api_key)
     return tavily_client.search(query, 
                          max_results=max_results, 
                          include_raw_content=fetch_full_page)

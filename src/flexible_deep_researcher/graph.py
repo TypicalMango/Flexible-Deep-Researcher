@@ -1,17 +1,18 @@
 import json
 
-from typing_extensions import Literal
+from typing import Literal
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_ollama import ChatOllama
 from langgraph.graph import START, END, StateGraph
 
-from ollama_deep_researcher.configuration import Configuration, SearchAPI
-from ollama_deep_researcher.utils import deduplicate_and_format_sources, tavily_search, format_sources, perplexity_search, duckduckgo_search, searxng_search, strip_thinking_tokens, get_config_value
-from ollama_deep_researcher.state import SummaryState, SummaryStateInput, SummaryStateOutput
-from ollama_deep_researcher.prompts import query_writer_instructions, summarizer_instructions, reflection_instructions, get_current_date
-from ollama_deep_researcher.lmstudio import ChatLMStudio
+from flexible_deep_researcher.configuration import Configuration
+from flexible_deep_researcher.utils import deduplicate_and_format_sources, tavily_search, format_sources, perplexity_search, duckduckgo_search, searxng_search, strip_thinking_tokens, get_config_value
+from flexible_deep_researcher.state import SummaryState, SummaryStateInput, SummaryStateOutput
+from flexible_deep_researcher.prompts import query_writer_instructions, summarizer_instructions, reflection_instructions, get_current_date
+from flexible_deep_researcher.lmstudio import ChatLMStudio
+from flexible_deep_researcher.google_genai import GoogleQueryGenerator, GoogleSummarizer, GoogleReflector
 
 # Nodes
 def generate_query(state: SummaryState, config: RunnableConfig):
@@ -38,21 +39,30 @@ def generate_query(state: SummaryState, config: RunnableConfig):
     # Generate a query
     configurable = Configuration.from_runnable_config(config)
     
-    # Choose the appropriate LLM based on the provider
-    if configurable.llm_provider == "lmstudio":
+    # Choose the appropriate LLM based on the provider  
+    if configurable.llm_provider == "google-genai":
+        llm_json_mode = GoogleQueryGenerator(
+            google_api_key=configurable.google_genai_api_key,
+            model=configurable.llm,
+            temperature=0,
+            max_retries=2,
+        )  
+    elif configurable.llm_provider == "lmstudio":
         llm_json_mode = ChatLMStudio(
             base_url=configurable.lmstudio_base_url, 
-            model=configurable.local_llm, 
+            model=configurable.llm, 
             temperature=0, 
             format="json"
         )
-    else: # Default to Ollama
+    elif configurable.llm_provider == "ollama":
         llm_json_mode = ChatOllama(
             base_url=configurable.ollama_base_url, 
-            model=configurable.local_llm, 
+            model=configurable.llm, 
             temperature=0, 
             format="json"
         )
+    else:
+        raise ValueError(f"Unsupported LLM Provider: {configurable.llm_provider}")
     
     result = llm_json_mode.invoke(
         [SystemMessage(content=formatted_prompt),
@@ -62,6 +72,8 @@ def generate_query(state: SummaryState, config: RunnableConfig):
     # Get the content
     content = result.content
 
+    # Optional print
+    # print(f"Query generator output: {result.content}")
     # Parse the JSON response and get the query
     try:
         query = json.loads(content)
@@ -95,7 +107,7 @@ def web_research(state: SummaryState, config: RunnableConfig):
 
     # Search the web
     if search_api == "tavily":
-        search_results = tavily_search(state.search_query, fetch_full_page=configurable.fetch_full_page, max_results=1)
+        search_results = tavily_search(api_key=configurable.tavily_api_key, query=state.search_query, fetch_full_page=configurable.fetch_full_page, max_results=1)
         search_str = deduplicate_and_format_sources(search_results, max_tokens_per_source=1000, fetch_full_page=configurable.fetch_full_page)
     elif search_api == "perplexity":
         search_results = perplexity_search(state.search_query, state.research_loop_count)
@@ -149,18 +161,27 @@ def summarize_sources(state: SummaryState, config: RunnableConfig):
     configurable = Configuration.from_runnable_config(config)
     
     # Choose the appropriate LLM based on the provider
-    if configurable.llm_provider == "lmstudio":
+    if configurable.llm_provider == "google-genai":
+        llm = GoogleSummarizer(
+            google_api_key=configurable.google_genai_api_key,
+            model=configurable.llm,
+            temperature=0,
+            max_retries=2,
+        )
+    elif configurable.llm_provider == "lmstudio":
         llm = ChatLMStudio(
             base_url=configurable.lmstudio_base_url, 
-            model=configurable.local_llm, 
-            temperature=0
-        )
-    else:  # Default to Ollama
+            model=configurable.llm, 
+            temperature=0,
+            )
+    elif configurable.llm_provider == "ollama":
         llm = ChatOllama(
             base_url=configurable.ollama_base_url, 
-            model=configurable.local_llm, 
-            temperature=0
+            model=configurable.llm, 
+            temperature=0,
         )
+    else:
+        raise ValueError(f"Unsupported LLM Provider: {configurable.llm_provider}")
     
     result = llm.invoke(
         [SystemMessage(content=summarizer_instructions),
@@ -172,6 +193,8 @@ def summarize_sources(state: SummaryState, config: RunnableConfig):
     if configurable.strip_thinking_tokens:
         running_summary = strip_thinking_tokens(running_summary)
 
+    # Optional print
+    # print(f"Summarizer output: {running_summary}")
     return {"running_summary": running_summary}
 
 def reflect_on_summary(state: SummaryState, config: RunnableConfig):
@@ -192,27 +215,39 @@ def reflect_on_summary(state: SummaryState, config: RunnableConfig):
     # Generate a query
     configurable = Configuration.from_runnable_config(config)
     
-    # Choose the appropriate LLM based on the provider
-    if configurable.llm_provider == "lmstudio":
+    # Choose the appropriate LLM based on the provider  
+    if configurable.llm_provider == "google-genai":
+        llm_json_mode = GoogleReflector(
+            google_api_key=configurable.google_genai_api_key,
+            model=configurable.llm,
+            temperature=1.0,
+            max_retries=2,
+        )   
+    elif configurable.llm_provider == "lmstudio":
         llm_json_mode = ChatLMStudio(
             base_url=configurable.lmstudio_base_url, 
-            model=configurable.local_llm, 
+            model=configurable.llm, 
             temperature=0, 
             format="json"
         )
-    else: # Default to Ollama
+    elif configurable.llm_provider == "ollama":
         llm_json_mode = ChatOllama(
             base_url=configurable.ollama_base_url, 
-            model=configurable.local_llm, 
+            model=configurable.llm, 
             temperature=0, 
             format="json"
         )
+    else:
+        raise ValueError(f"Unsupported LLM Provider: {configurable.llm_provider}")
+
     
     result = llm_json_mode.invoke(
         [SystemMessage(content=reflection_instructions.format(research_topic=state.research_topic)),
         HumanMessage(content=f"Reflect on our existing knowledge: \n === \n {state.running_summary}, \n === \n And now identify a knowledge gap and generate a follow-up web search query:")]
     )
     
+    # Optional print
+    # print(f"Reflector output: {result.content}")
     # Strip thinking tokens if configured
     try:
         # Try to parse as JSON first
@@ -279,20 +314,22 @@ def route_research(state: SummaryState, config: RunnableConfig) -> Literal["fina
     else:
         return "finalize_summary"
 
-# Add nodes and edges
-builder = StateGraph(SummaryState, input=SummaryStateInput, output=SummaryStateOutput, config_schema=Configuration)
-builder.add_node("generate_query", generate_query)
-builder.add_node("web_research", web_research)
-builder.add_node("summarize_sources", summarize_sources)
-builder.add_node("reflect_on_summary", reflect_on_summary)
-builder.add_node("finalize_summary", finalize_summary)
+def build_graph():
+    # Add nodes
+    builder = StateGraph(SummaryState, input=SummaryStateInput, output=SummaryStateOutput, config_schema=Configuration)
+    builder.add_node("generate_query", generate_query)
+    builder.add_node("web_research", web_research)
+    builder.add_node("summarize_sources", summarize_sources)
+    builder.add_node("reflect_on_summary", reflect_on_summary)
+    builder.add_node("finalize_summary", finalize_summary)
 
-# Add edges
-builder.add_edge(START, "generate_query")
-builder.add_edge("generate_query", "web_research")
-builder.add_edge("web_research", "summarize_sources")
-builder.add_edge("summarize_sources", "reflect_on_summary")
-builder.add_conditional_edges("reflect_on_summary", route_research)
-builder.add_edge("finalize_summary", END)
+    # Add edges
+    builder.add_edge(START, "generate_query")
+    builder.add_edge("generate_query", "web_research")
+    builder.add_edge("web_research", "summarize_sources")
+    builder.add_edge("summarize_sources", "reflect_on_summary")
+    builder.add_conditional_edges("reflect_on_summary", route_research)
+    builder.add_edge("finalize_summary", END)
 
-graph = builder.compile()
+    # Compile the graph
+    return builder.compile()
